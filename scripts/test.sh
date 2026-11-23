@@ -34,6 +34,13 @@ for f in "$PROJECT"/integration/*.py "$PROJECT"/nagios/plugins/*.py tests/*.py; 
   echo "  ok $f"
 done
 
+echo "==> docs present"
+for f in web-down nginx-down bad-config db-crash disk-fill cpu-load net-cut; do
+  [ -s "$PROJECT/docs/runbooks/$f.md" ] || { echo "FAIL: missing runbook $f"; exit 1; }
+done
+[ -s "$PROJECT/docs/diagrams/architecture.md" ] || { echo "FAIL: missing architecture diagram"; exit 1; }
+ls "$PROJECT"/docs/rca/*drill*.md >/dev/null
+
 echo "==> .env hygiene"
 grep -qx '.env' "$PROJECT/.gitignore" || { echo "FAIL: .env not in generated .gitignore"; exit 1; }
 
