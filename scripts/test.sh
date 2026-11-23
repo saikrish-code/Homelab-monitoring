@@ -29,7 +29,7 @@ else
 fi
 
 echo "==> python compile"
-for f in "$PROJECT"/integration/*.py "$PROJECT"/nagios/plugins/*.py tests/*.py; do
+for f in "$PROJECT"/integration/*.py "$PROJECT"/nagios/plugins/*.py "$PROJECT"/console/*.py tests/*.py; do
   "$PY" -I -c "import sys; compile(open(sys.argv[1], encoding='utf-8').read(), sys.argv[1], 'exec')" "$f"
   echo "  ok $f"
 done
