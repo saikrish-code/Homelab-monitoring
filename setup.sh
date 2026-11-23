@@ -1225,7 +1225,7 @@ docker exec mon01 supervisorctl -c /etc/supervisord-lab.conf restart nagios
 
 ## Docs
 
-`docs/runbooks/` runbooks, `docs/rca/` RCA reports, `docs/diagrams/` draw.io network diagram.
+`docs/runbooks/` runbooks, `docs/rca/` RCA reports, `docs/diagrams/` Mermaid architecture diagram.
 __EOF__
 cp .env .env.example
 # make the shared example safe to commit (no real secrets)
@@ -1288,6 +1288,169 @@ cat > docs/runbooks/nginx-down.md <<'__EOF__'
 - Not fixed within 15 min -> escalate to application owner.
 __EOF__
 
+cat > docs/runbooks/web-down.md <<'__EOF__'
+# Runbook: web01 host DOWN
+
+- **Alert:** `Host web01 is DOWN` (Nagios host check, ping); every web01 service goes UNREACHABLE/CRITICAL
+- **Drill:** `scenarios/break-it.sh web-down` / `web-up`
+- **Severity:** P1 (whole web tier gone)
+- **Owner:** Infrastructure
+
+## Diagnosis
+1. Is the container running? `docker ps -a --filter name=web01` (Exited = stopped or crashed)
+2. Why did it stop? `docker logs --tail 50 web01` and `docker inspect -f '{{.State.ExitCode}} {{.State.OOMKilled}}' web01`
+3. If running but unreachable, see the net-cut runbook.
+4. Do other hosts still work (`db01` UP)? If yes the fault is isolated to web01.
+
+## Resolution
+1. `docker start web01` (or `scenarios/break-it.sh web-up`)
+2. If it will not start: `docker compose up -d web01` and read the build/start error.
+3. Note `/data` is tmpfs: files there are lost on restart (expected for the lab).
+
+## Verification
+- `docker exec mon01 /usr/lib/nagios/plugins/check_host -H 172.20.0.11` -> `OK`
+- `curl -s http://localhost:8081/health` returns `{"status":"ok",...}`
+- Nagios: web01 UP, services OK; the incident `web01/HOST` auto-resolves; RECOVERY mail in Mailpit.
+
+## Escalation
+- Container will not start after 2 attempts, or OOMKilled -> escalate to platform owner.
+__EOF__
+
+cat > docs/runbooks/bad-config.md <<'__EOF__'
+# Runbook: nginx fails to start after a config change
+
+- **Alert:** `HTTP`, `Process nginx` and `App Health JSON` CRITICAL on web01 (connection refused / 0 processes)
+- **Drill:** `scenarios/break-it.sh bad-config` / `bad-config-fix`
+- **Severity:** P2
+- **Owner:** Linux Support / change author
+
+## Diagnosis
+1. `docker exec web01 supervisorctl -c /etc/supervisord-lab.conf status` -> nginx `FATAL`/`BACKOFF`
+2. `docker exec web01 nginx -t` -> names the file and line (here `/etc/nginx/conf.d/broken.conf`)
+3. What changed recently? `docker exec web01 ls -lt /etc/nginx/conf.d/`
+
+## Resolution
+1. Fix or remove the offending file: `docker exec web01 rm -f /etc/nginx/conf.d/broken.conf`
+2. Re-validate: `docker exec web01 nginx -t`
+3. Start nginx: `docker exec web01 supervisorctl -c /etc/supervisord-lab.conf start nginx`
+
+## Verification
+- `nginx -t` reports `syntax is ok`; `curl -s http://localhost:8081/health` returns ok.
+- Nagios checks OK; incidents resolved.
+
+## Prevention
+- Always run `nginx -t` before reloading. Keep config in version control and review changes.
+
+## Escalation
+- Cannot identify the bad change within 15 min -> escalate to the change author / application owner.
+__EOF__
+
+cat > docs/runbooks/db-crash.md <<'__EOF__'
+# Runbook: db01 MariaDB down
+
+- **Alert:** `MySQL`, `MySQL Query customers rows` and `Process mariadbd` CRITICAL on db01
+- **Drill:** `scenarios/break-it.sh db-crash` / `db-fix`
+- **Severity:** P1 (data tier down)
+- **Owner:** Database Support
+
+## Diagnosis
+1. Is db01 itself up? `docker ps --filter name=db01`
+2. Process state: `docker exec db01 supervisorctl -c /etc/supervisord-lab.conf status`
+3. Why did it die? `docker logs --tail 80 db01` (OOM, disk full, corrupted InnoDB, bad config)
+4. Disk space: `docker exec db01 df -h /var/lib/mysql`
+
+## Resolution
+1. Start it: `docker exec db01 supervisorctl -c /etc/supervisord-lab.conf start mariadb`
+2. Watch recovery in `docker logs -f db01` (InnoDB crash recovery after kill -9 can take a few seconds).
+3. If it will not start: do not delete data files; escalate.
+
+## Verification
+- `docker exec db01 mariadb -uroot -p"$MARIADB_ROOT_PASSWORD" -e 'SELECT COUNT(*) FROM labdb.customers'`
+- Nagios `MySQL`, `MySQL Query customers rows`, `Process mariadbd` OK; incidents resolved.
+
+## Escalation
+- Crash recurs, or recovery fails -> DBA on call. Capture logs before restarting again.
+__EOF__
+
+cat > docs/runbooks/disk-fill.md <<'__EOF__'
+# Runbook: web01 /data filling up
+
+- **Alert:** `Disk /data` WARNING (< 20% free) then CRITICAL (< 10% free) on web01
+- **Drill:** `scenarios/break-it.sh disk-fill` / `disk-fix` (creates `/data/fill.bin`, 95 MB)
+- **Severity:** P3 at WARNING, P2 at CRITICAL (writes will start failing)
+- **Owner:** Linux Support
+
+## Diagnosis
+1. `docker exec web01 df -h /data`
+2. Largest consumers: `docker exec web01 du -ah /data | sort -rh | head`
+3. Is something still writing? `docker exec web01 ls -l --time-style=full-iso /data`
+
+## Resolution
+1. Remove the offending file (here `/data/fill.bin`): `docker exec web01 rm -f /data/fill.bin`
+2. If it is legitimate growth: rotate/compress logs, or raise the volume size.
+
+## Verification
+- `df -h /data` shows > 20% free; Nagios `Disk /data` OK; incident resolved.
+
+## Prevention
+- Log rotation, alert at WARNING (already configured), capacity review.
+
+## Escalation
+- Cannot free space safely -> storage owner.
+__EOF__
+
+cat > docs/runbooks/cpu-load.md <<'__EOF__'
+# Runbook: sustained high CPU load
+
+- **Alert:** `CPU Load` WARNING/CRITICAL on web01 (load average 1/5/15 min)
+- **Drill:** `scenarios/break-it.sh cpu-load` / `cpu-fix` (stress-ng, 3 workers per core, 10 min max)
+- **Severity:** P3 (WARNING), P2 (CRITICAL)
+- **Owner:** Linux Support
+- **Lab caveat:** containers share the Docker host kernel, so load average reflects the whole Docker host,
+  not only web01. db01 `CPU Load` may alert too, and unrelated host activity can trip it.
+
+## Diagnosis
+1. `docker exec web01 uptime` and `docker exec web01 top -b -n1 | head -15`
+2. Which process? (`stress-ng` in the drill; in real life a runaway worker or traffic spike.)
+3. Is it one host or all? Compare with `docker exec db01 uptime`.
+
+## Resolution
+1. Stop the offender: `docker exec web01 pkill stress-ng`
+2. If legitimate load: scale out or tune the application; do not just kill production workers.
+
+## Verification
+- `uptime` 1-min load drops back below the warning threshold (takes a few minutes: the 5/15-min averages decay slowly).
+- Nagios `CPU Load` OK; incident resolved.
+
+## Escalation
+- Load persists with no obvious process -> application owner / capacity planning.
+__EOF__
+
+cat > docs/runbooks/net-cut.md <<'__EOF__'
+# Runbook: web01 unreachable on the network
+
+- **Alert:** web01 Host DOWN (ping fails) while the container is still running
+- **Drill:** `scenarios/break-it.sh net-cut` / `net-fix` (disconnects web01 from `homelab_labnet`)
+- **Severity:** P1
+- **Owner:** Network / Infrastructure
+
+## Diagnosis
+1. Container is running but unreachable: `docker ps --filter name=web01` shows Up.
+2. Network membership: `docker inspect -f '{{json .NetworkSettings.Networks}}' web01` (empty = detached).
+3. From mon01: `docker exec mon01 ping -c2 172.20.0.11` fails; `db01` still answers -> isolated fault.
+
+## Resolution
+1. Reattach with its fixed IP: `docker network connect --ip 172.20.0.11 homelab_labnet web01`
+   (or `scenarios/break-it.sh net-fix`).
+2. Confirm the IP: `docker exec web01 hostname -i` -> `172.20.0.11`.
+
+## Verification
+- Ping and NRPE work from mon01; Nagios web01 UP and services OK; incident `web01/HOST` resolved.
+
+## Escalation
+- Reconnect fails (address in use, network missing) -> platform owner.
+__EOF__
+
 cat > docs/rca/TEMPLATE.md <<'__EOF__'
 # RCA: <incident title>
 
@@ -1331,11 +1494,125 @@ One paragraph: what happened and what the impact was.
 -
 __EOF__
 
-cat > docs/diagrams/README.md <<'__EOF__'
-Draw the network diagram in draw.io (diagrams.net) and save `network-diagram.drawio` + a PDF export here.
-Include: Docker host, bridge network labnet 172.20.0.0/24, mon01 (.10), web01 (.11), db01 (.12),
-mailpit (.20), published ports (8080, 8081, 8025), check flows (HTTP, NRPE 5666, MySQL 3306),
-SMTP 1025 to Mailpit, and the HTTPS REST path from mon01 to the ServiceNow instance.
+cat > docs/rca/2026-11-23-db-crash-drill.md <<'__EOF__'
+# RCA: db01 MariaDB killed (lab drill, 2026-11-23)
+
+| Field | Value |
+|---|---|
+| Incident # | none (ServiceNow bridge in DRY-RUN mode; correlation keys `db01/MySQL`, `db01/MySQL Query customers rows`, `db01/Process mariadbd`) |
+| Date | 2026-11-23 |
+| Duration | about 2m 15s from fault to full recovery (~07:43:00 - 07:45:35 UTC) |
+| Severity | P1 (data tier down) - simulated |
+| Author | drill operator |
+| Source | `scenarios/break-it.sh db-crash` then `db-fix`, driven by `scripts/drill.sh` |
+
+## Summary
+In a planned drill, `mariadbd` on db01 was killed with `kill -9`. Nagios detected the outage on three
+checks, sent PROBLEM emails to Mailpit and invoked the ServiceNow bridge (dry-run). MariaDB was restarted
+through supervisord and all three checks recovered, with RECOVERY emails and bridge calls. No data loss
+(the `customers` query returned its 5 rows after recovery). This is a simulated fault, not a production
+incident.
+
+## Timeline (UTC, from `nagios.log` and `lab_notify.log`)
+| Time | Event |
+|---|---|
+| ~07:43:00 | Fault introduced: `docker exec db01 pkill -9 mariadbd` |
+| 07:43:16 | `MySQL` CRITICAL (SOFT 1): connection refused (111) |
+| 07:43:26 | `MySQL Query customers rows` CRITICAL (SOFT 1) |
+| 07:43:35 | `Process mariadbd` CRITICAL (SOFT 1): 0 processes |
+| 07:44:16 | `MySQL` CRITICAL HARD (attempt 2); notification sent, bridge called |
+| 07:44:26 | `MySQL Query customers rows` HARD; notified |
+| 07:44:35 | `Process mariadbd` HARD; notified |
+| ~07:44:35 | Fix applied: `supervisorctl start mariadb` (`db-fix`) |
+| 07:45:16 | `MySQL` OK (HARD); RECOVERY mail + bridge call |
+| 07:45:26 | `MySQL Query customers rows` OK; returned 5 rows |
+| 07:45:35 | `Process mariadbd` OK; all recovered |
+
+Detection to HARD took about 74 s (check interval 1 min, 2 attempts); recovery was confirmed about 44 s
+after the restart, bounded by the 1-minute check interval.
+
+## Root cause (5 Whys)
+1. Why did the site's data tier fail? `mariadbd` was not running.
+2. Why was it not running? It was killed with SIGKILL (the drill).
+3. Why did it not restart by itself? db01's supervisord entry has `autorestart=false` by design,
+   so the drill outage persists until an operator acts.
+4. Why was a SIGKILL able to take the service down? Nothing restarts or fails over the database;
+   there is a single instance.
+5. Why single instance? Lab scope. **Root cause:** single, non-self-healing database instance.
+
+## What went well / what did not
+- Went well: all three related checks detected the fault within ~75 s of HARD; emails and bridge
+  calls fired for each; data intact after InnoDB crash recovery.
+- Did not: three separate alerts (three incidents in ServiceNow) for one fault; no correlation or
+  parent/child grouping. Nagios macro sanitisation strips apostrophes from output (`Can't` -> `Cant`).
+
+## Corrective and preventive actions
+| Action | Owner | Due |
+|---|---|---|
+| Group MySQL/process/query alerts into one incident (e.g. correlate on host, or add service dependencies) | Monitoring | open |
+| Enable `autorestart=true` with a backoff in production-like setups, keep alerting on restarts | Platform | open |
+| Add replication or backups for a real database tier | DBA | open |
+
+## Lessons learned
+- A check interval of 1 minute with 2 attempts means about 1-2 minutes before notification.
+- Drills should hold a fault long enough to reach HARD state; a host that recovers while still SOFT
+  generates no notification (observed in an early net-cut run).
+__EOF__
+
+cat > docs/diagrams/architecture.md <<'__EOF__'
+# Architecture
+
+Rendered by GitHub, GitLab, VS Code and any Mermaid-aware viewer. To edit as draw.io:
+in diagrams.net use *Arrange > Insert > Advanced > Mermaid* and paste the block below.
+
+```mermaid
+flowchart LR
+  user([Operator browser])
+  subgraph host[Docker host]
+    subgraph labnet["labnet 172.20.0.0/24"]
+      mon01["mon01 .10<br/>Nagios Core + Apache :80<br/>snow_incident.py / notify_email.py"]
+      web01["web01 .11<br/>nginx :80 + NRPE :5666"]
+      db01["db01 .12<br/>MariaDB :3306 + NRPE :5666"]
+      mailpit["mailpit .20<br/>SMTP :1025 / UI :8025"]
+    end
+  end
+  snow[("ServiceNow instance<br/>REST Table API")]
+
+  user -- "8080 (Nagios UI)" --> mon01
+  user -- "8081 (site)" --> web01
+  user -- "8025 (mail UI)" --> mailpit
+  mon01 -- "check_http, check_json_status" --> web01
+  mon01 -- "NRPE 5666" --> web01
+  mon01 -- "NRPE 5666, check_mysql 3306" --> db01
+  mon01 -- "SMTP 1025 alert mail" --> mailpit
+  mon01 -- "HTTPS incident create / note / resolve" --> snow
+```
+
+## Alert flow
+
+```mermaid
+sequenceDiagram
+  participant N as Nagios (mon01)
+  participant T as Target (web01/db01)
+  participant M as Mailpit
+  participant S as ServiceNow
+  N->>T: active check (retry until HARD)
+  T-->>N: CRITICAL
+  N->>M: PROBLEM email
+  N->>S: find open incident by correlation_id
+  alt none open
+    N->>S: POST incident
+  else already open
+    N->>S: PATCH work note (no duplicate)
+  end
+  N->>T: next checks
+  T-->>N: OK
+  N->>M: RECOVERY email
+  N->>S: PATCH work note + state=Resolved
+```
+
+Without `SNOW_*` credentials in `.env` the ServiceNow steps run in dry-run mode (logged only, in
+`/var/log/nagios4/lab_notify.log` inside mon01).
 __EOF__
 
 chmod +x scenarios/break-it.sh integration/*.py nagios/entrypoint.sh nagios/plugins/check_json_status.py db01/init/01-lab.sh
