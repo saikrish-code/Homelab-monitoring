@@ -1,0 +1,75 @@
+name: homelab
+
+services:
+  mon01:
+    build:
+      context: .
+      dockerfile: nagios/Dockerfile
+    container_name: mon01
+    hostname: mon01
+    restart: unless-stopped
+    environment:
+      NAGIOSADMIN_PASS: ${NAGIOSADMIN_PASS:?set NAGIOSADMIN_PASS in .env}
+      NAGIOS_DB_PASS: ${NAGIOS_DB_PASS:?set NAGIOS_DB_PASS in .env}
+      SMTP_HOST: mailpit
+      SMTP_PORT: "1025"
+      SNOW_INSTANCE: ${SNOW_INSTANCE:-}
+      SNOW_USER: ${SNOW_USER:-}
+      SNOW_PASS: ${SNOW_PASS:-}
+      SNOW_ASSIGNMENT_GROUP_SYSID: ${SNOW_ASSIGNMENT_GROUP_SYSID:-}
+    ports:
+      - "8080:80"
+    depends_on:
+      - web01
+      - db01
+      - mailpit
+    networks:
+      labnet:
+        ipv4_address: 172.20.0.10
+
+  web01:
+    build: ./web01
+    container_name: web01
+    hostname: web01
+    restart: "no"
+    tmpfs:
+      - /data:size=100m,mode=1777
+    ports:
+      - "8081:80"
+    networks:
+      labnet:
+        ipv4_address: 172.20.0.11
+
+  db01:
+    build: ./db01
+    container_name: db01
+    hostname: db01
+    restart: "no"
+    environment:
+      MARIADB_ROOT_PASSWORD: ${MARIADB_ROOT_PASSWORD:?set MARIADB_ROOT_PASSWORD in .env}
+      NAGIOS_DB_PASS: ${NAGIOS_DB_PASS:?set NAGIOS_DB_PASS in .env}
+    volumes:
+      - db_data:/var/lib/mysql
+    networks:
+      labnet:
+        ipv4_address: 172.20.0.12
+
+  mailpit:
+    image: axllent/mailpit:latest
+    container_name: mailpit
+    restart: unless-stopped
+    ports:
+      - "8025:8025"
+    networks:
+      labnet:
+        ipv4_address: 172.20.0.20
+
+networks:
+  labnet:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.20.0.0/24
+
+volumes:
+  db_data:
