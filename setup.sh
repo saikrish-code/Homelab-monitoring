@@ -147,7 +147,7 @@ ENV DEBIAN_FRONTEND=noninteractive
 
 RUN apt-get update \
  && apt-get install -y --no-install-recommends \
-      nagios4 monitoring-plugins nagios-nrpe-plugin \
+      nagios4 monitoring-plugins nagios-nrpe-plugin libmysqlclient21 \
       apache2 apache2-utils supervisor \
       python3 python3-requests iputils-ping curl ca-certificates procps \
  && rm -rf /var/lib/apt/lists/*
@@ -263,7 +263,7 @@ Alias /nagios4/stylesheets /etc/nagios4/stylesheets
 Alias /nagios4 /usr/share/nagios4/htdocs
 
 <Directory /usr/share/nagios4/htdocs>
-    Options FollowSymLinks
+    Options +FollowSymLinks
     AllowOverride None
     AuthType Basic
     AuthName "Nagios Lab"
@@ -272,7 +272,7 @@ Alias /nagios4 /usr/share/nagios4/htdocs
 </Directory>
 
 <Directory /usr/lib/cgi-bin/nagios4>
-    Options +ExecCGI FollowSymLinks
+    Options +ExecCGI +FollowSymLinks
     AllowOverride None
     AuthType Basic
     AuthName "Nagios Lab"
@@ -281,7 +281,7 @@ Alias /nagios4 /usr/share/nagios4/htdocs
 </Directory>
 
 <Directory /etc/nagios4/stylesheets>
-    Options FollowSymLinks
+    Options +FollowSymLinks
     AllowOverride None
     Require all granted
 </Directory>
@@ -300,7 +300,6 @@ nagios_user=nagios
 nagios_group=nagios
 
 check_external_commands=1
-command_check_interval=-1
 command_file=/var/lib/nagios4/rw/nagios.cmd
 lock_file=/var/lib/nagios4/nagios4.pid
 temp_file=/var/cache/nagios4/nagios.tmp
@@ -333,7 +332,6 @@ cached_service_check_horizon=15
 enable_predictive_host_dependency_checks=1
 enable_predictive_service_dependency_checks=1
 auto_reschedule_checks=0
-sleep_time=0.25
 service_check_timeout=60
 host_check_timeout=30
 event_handler_timeout=30
@@ -509,7 +507,7 @@ define service {
 define service {
     use                 lab-service
     host_name           web01
-    service_description App Health (JSON)
+    service_description App Health JSON
     check_command       check_json_health
 }
 define service {
@@ -553,7 +551,7 @@ define service {
 define service {
     use                 lab-service
     host_name           db01
-    service_description MySQL Query (customers rows)
+    service_description MySQL Query customers rows
     check_command       check_mysql_rows
 }
 define service {
