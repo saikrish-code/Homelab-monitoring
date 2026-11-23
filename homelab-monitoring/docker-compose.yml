@@ -64,6 +64,23 @@ services:
       labnet:
         ipv4_address: 172.20.0.20
 
+  console:
+    build: ./console
+    container_name: console
+    restart: unless-stopped
+    environment:
+      NAGIOSADMIN_PASS: ${NAGIOSADMIN_PASS:?set NAGIOSADMIN_PASS in .env}
+    ports:
+      - "127.0.0.1:8090:8090"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ./scenarios:/scenarios:ro
+    depends_on:
+      - mon01
+    networks:
+      labnet:
+        ipv4_address: 172.20.0.30
+
 networks:
   labnet:
     driver: bridge

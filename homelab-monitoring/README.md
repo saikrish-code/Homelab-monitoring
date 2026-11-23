@@ -75,4 +75,4 @@ docker exec mon01 supervisorctl -c /etc/supervisord-lab.conf restart nagios
 
 ## Docs
 
-`docs/runbooks/` runbooks, `docs/rca/` RCA reports, `docs/diagrams/` draw.io network diagram.
+`docs/runbooks/` runbooks, `docs/rca/` RCA reports, `docs/diagrams/` Mermaid architecture diagram.
